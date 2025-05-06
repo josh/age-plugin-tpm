@@ -33,7 +33,7 @@ var example = `
   # Created: 2023-07-10 22:13:57.864450969 +0200 CEST m=+0.475252114
   # Recipient: age1tpm1qt92lcdxj75rjz9e4t9nud7fv6t2cfn8rhzdfnc0z2rnfgv3cqwrqgme4dq
 
-  AGE-PLUGIN-TPM-1QYQQQKQQYVQQKQQZQPEQQQQQZQQPJQQTQQPSQYQQYR92LCDXJ75RJZ9E4T9NUD7[...]
+  AGE-PLUGIN-TPM-1QYQQQKQQYQQKQQZQPEQQQQQZQQPJQQTQQPSQYQQYR92LCDXJ75RJZ9E4T9NUD7[...]
 
   $ echo "Hello World" | age -r "age1tpm1syqqqpqrtxsnkkqlmu505zzrq439hetls4qwwmyhsv8dgjhksvtewvx29lxs7s68qy" > secret.age
 
@@ -174,25 +174,39 @@ type Identity struct {
 }
 
 func (i *Identity) Unwrap(stanzas []*age.Stanza) (fileKey []byte, err error) {
-	for _, stanza := range stanzas {
+	plugin.Log.Printf("Unwrap called with %d stanzas", len(stanzas))
+	for stanzaIdx, stanza := range stanzas {
+		plugin.Log.Printf("Unwrap: processing stanza %d, type %s, args_len %d", stanzaIdx, stanza.Type, len(stanza.Args))
 		// We only understand "tpm-ecc" stanzas
-		if len(stanza.Args) < 2 || stanza.Type != "tpm-ecc" {
+		if stanza.Type != "tpm-ecc" {
+			plugin.Log.Printf("Unwrap: skipping non tpm-ecc stanza type %s", stanza.Type)
 			continue
+		}
+		if len(stanza.Args) != 2 {
+			err = fmt.Errorf("invalid tpm-ecc stanza (expected 2 args, got %d for type %s)", len(stanza.Args), stanza.Type)
+			plugin.Log.Printf("Unwrap: error: %v", err)
+			return nil, err
 		}
 
 		tag, err := b64Decode(stanza.Args[0])
 		if err != nil {
-			return nil, fmt.Errorf("failed base64 decode session key: %v", err)
+			err = fmt.Errorf("failed base64 decode tag: %v", err)
+			plugin.Log.Printf("Unwrap: error: %v", err)
+			return nil, err
 		}
 
 		sessionKey, err := b64Decode(stanza.Args[1])
 		if err != nil {
-			return nil, fmt.Errorf("failed base64 decode session key: %v", err)
+			err = fmt.Errorf("failed base64 decode session key: %v", err)
+			plugin.Log.Printf("Unwrap: error: %v", err)
+			return nil, err
 		}
 
 		resp, err := i.Recipient()
 		if err != nil {
-			return nil, fmt.Errorf("failed to get recipient for identity: %v", err)
+			err = fmt.Errorf("failed to get recipient for identity: %v", err)
+			plugin.Log.Printf("Unwrap: error: %v", err)
+			return nil, err
 		}
 
 		// Check if we are dealing with the correct key
@@ -207,19 +221,34 @@ func (i *Identity) Unwrap(stanzas []*age.Stanza) (fileKey []byte, err error) {
 			} else if s := os.Getenv("AGE_TPM_PINENTRY"); s != "" {
 				pin, err = plugin.GetPinentry()
 				if err != nil {
+					err = fmt.Errorf("failed to get pin from pinentry: %w", err)
+					plugin.Log.Printf("Unwrap: error: %v", err)
 					return nil, err
 				}
 			} else {
+				plugin.Log.Println("Unwrap: requesting PIN from age client")
 				ps, err := i.p.RequestValue("Please enter the PIN for the key:", true)
 				if err != nil {
+					err = fmt.Errorf("failed to request PIN from age client: %w", err)
+					plugin.Log.Printf("Unwrap: error: %v", err)
 					return nil, err
 				}
 				pin = []byte(ps)
 			}
 		}
 
-		return plugin.DecryptFileKeyTPM(i.tpm, i.Identity, sessionKey, stanza.Body, pin)
+		plugin.Log.Println("Unwrap: calling DecryptFileKeyTPM")
+		fileKey, err = plugin.DecryptFileKeyTPM(i.tpm, i.Identity, sessionKey, stanza.Body, pin)
+		if err != nil {
+			plugin.Log.Printf("Unwrap: DecryptFileKeyTPM error: %v", err)
+			// Do not return yet, continue to the next stanza as per original logic
+			// The final return handles age.ErrIncorrectIdentity if no stanza succeeds
+			continue
+		}
+		plugin.Log.Println("Unwrap: DecryptFileKeyTPM successful")
+		return fileKey, nil // Successful decryption
 	}
+	plugin.Log.Println("Unwrap: no suitable stanza found or all attempts failed")
 	return nil, age.ErrIncorrectIdentity
 }
 
@@ -272,12 +301,15 @@ func RunPlugin(cmd *cobra.Command, args []string) error {
 		p.HandleIdentity(func(data []byte) (age.Identity, error) {
 			i, err := plugin.DecodeIdentity(page.EncodeIdentity("tpm", data))
 			if err != nil {
+				plugin.Log.Printf("HandleIdentity callback: DecodeIdentity error: %v", err)
 				return nil, err
 			}
 			return &Identity{i, p, tpm.TPM()}, nil
 		})
 		if exitCode := p.IdentityV1(); exitCode != 0 {
-			return fmt.Errorf("age-plugin exited with code %d", exitCode)
+			err = fmt.Errorf("age-plugin exited with code %d", exitCode)
+			plugin.Log.Printf("RunPlugin: IdentityV1 error: %v", err)
+			return err
 		}
 	default:
 		tpm, err := getTPM()
