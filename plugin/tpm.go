@@ -30,10 +30,10 @@ func (t *TPMDevice) Close() {
 	t.tpm.Close()
 }
 
-// Watch for a interrution signal
+// Watch for interruption signals
 func (t *TPMDevice) Watch() {
 	sigch := make(chan os.Signal, 1)
-	signal.Notify(sigch, syscall.SIGINT)
+	signal.Notify(sigch, syscall.SIGINT, syscall.SIGTERM, syscall.SIGQUIT)
 	go func() {
 		<-sigch
 		t.Close()
