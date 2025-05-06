@@ -2,11 +2,13 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"fmt"
 	"io"
 	"log"
 	"os"
+	"time"
 
 	"filippo.io/age"
 	page "filippo.io/age/plugin"
@@ -240,63 +242,87 @@ func getTPM() (*plugin.TPMDevice, error) {
 }
 
 func RunPlugin(cmd *cobra.Command, args []string) error {
-
-	switch pluginOptions.AgePlugin {
-	case "recipient-v1":
-		plugin.Log.Println("Got recipient-v1")
-		p, err := page.New("tpm")
-		if err != nil {
-			return err
-		}
-		p.HandleRecipient(func(data []byte) (age.Recipient, error) {
-			r, err := plugin.DecodeRecipient(page.EncodeRecipient("tpm", data))
+	// Set a timeout for operations that might hang
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	
+	// Run in a goroutine so we can respect timeout
+	errCh := make(chan error, 1)
+	
+	go func() {
+		switch pluginOptions.AgePlugin {
+		case "recipient-v1":
+			plugin.Log.Println("Got recipient-v1")
+			p, err := page.New("tpm")
 			if err != nil {
-				return nil, err
+				errCh <- err
+				return
 			}
-			return &Recipient{r}, nil
-		})
-		if exitCode := p.RecipientV1(); exitCode != 0 {
-			return fmt.Errorf("age-plugin exited with code %d", exitCode)
-		}
-	case "identity-v1":
-		tpm, err := getTPM()
-		if err != nil {
-			return err
-		}
-		defer tpm.Close()
-		plugin.Log.Println("Got identity-v1")
-		p, err := page.New("tpm")
-		if err != nil {
-			return err
-		}
-		p.HandleIdentity(func(data []byte) (age.Identity, error) {
-			i, err := plugin.DecodeIdentity(page.EncodeIdentity("tpm", data))
+			p.HandleRecipient(func(data []byte) (age.Recipient, error) {
+				r, err := plugin.DecodeRecipient(page.EncodeRecipient("tpm", data))
+				if err != nil {
+					return nil, err
+				}
+				return &Recipient{r}, nil
+			})
+			if exitCode := p.RecipientV1(); exitCode != 0 {
+				errCh <- fmt.Errorf("age-plugin exited with code %d", exitCode)
+				return
+			}
+			errCh <- nil
+		case "identity-v1":
+			tpm, err := getTPM()
 			if err != nil {
-				return nil, err
+				errCh <- err
+				return
 			}
-			return &Identity{i, p, tpm.TPM()}, nil
-		})
-		if exitCode := p.IdentityV1(); exitCode != 0 {
-			return fmt.Errorf("age-plugin exited with code %d", exitCode)
-		}
-	default:
-		tpm, err := getTPM()
-		if err != nil {
-			return err
-		}
-		defer tpm.Close()
-		in := os.Stdin
-		if inFile := cmd.Flags().Arg(0); inFile != "" && inFile != "-" {
-			f, err := os.Open(inFile)
+			defer tpm.Close()
+			plugin.Log.Println("Got identity-v1")
+			p, err := page.New("tpm")
 			if err != nil {
-				return fmt.Errorf("failed to open input file %q: %v", inFile, err)
+				errCh <- err
+				return
 			}
-			defer f.Close()
-			in = f
+			p.HandleIdentity(func(data []byte) (age.Identity, error) {
+				i, err := plugin.DecodeIdentity(page.EncodeIdentity("tpm", data))
+				if err != nil {
+					return nil, err
+				}
+				return &Identity{i, p, tpm.TPM()}, nil
+			})
+			if exitCode := p.IdentityV1(); exitCode != 0 {
+				errCh <- fmt.Errorf("age-plugin exited with code %d", exitCode)
+				return
+			}
+			errCh <- nil
+		default:
+			tpm, err := getTPM()
+			if err != nil {
+				errCh <- err
+				return
+			}
+			defer tpm.Close()
+			in := os.Stdin
+			if inFile := cmd.Flags().Arg(0); inFile != "" && inFile != "-" {
+				f, err := os.Open(inFile)
+				if err != nil {
+					errCh <- fmt.Errorf("failed to open input file %q: %v", inFile, err)
+					return
+				}
+				defer f.Close()
+				in = f
+			}
+			errCh <- RunCli(cmd, tpm.TPM(), in, os.Stdout)
 		}
-		return RunCli(cmd, tpm.TPM(), in, os.Stdout)
+	}()
+	
+	// Wait for operation to complete or timeout
+	select {
+	case err := <-errCh:
+		return err
+	case <-ctx.Done():
+		return fmt.Errorf("operation timed out after 2 minutes: %v", ctx.Err())
 	}
-	return nil
 }
 
 func pluginFlags(cmd *cobra.Command, opts *PluginOptions) {

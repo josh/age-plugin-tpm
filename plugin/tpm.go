@@ -8,6 +8,7 @@ import (
 	"path"
 	"sync"
 	"syscall"
+	"time"
 
 	swtpm_test "github.com/foxboron/swtpm_test"
 	sim "github.com/google/go-tpm-tools/simulator"
@@ -30,12 +31,18 @@ func (t *TPMDevice) Close() {
 	t.tpm.Close()
 }
 
-// Watch for a interrution signal
+// Watch for interruption signals and implement a watchdog
 func (t *TPMDevice) Watch() {
 	sigch := make(chan os.Signal, 1)
-	signal.Notify(sigch, syscall.SIGINT)
+	signal.Notify(sigch, syscall.SIGINT, syscall.SIGTERM, syscall.SIGQUIT)
+	
 	go func() {
-		<-sigch
+		select {
+		case <-sigch:
+			Log.Println("Received termination signal")
+		case <-time.After(5 * time.Minute):
+			Log.Println("Watchdog timeout triggered after 5 minutes")
+		}
 		t.Close()
 	}()
 }
