@@ -243,45 +243,61 @@ func RunPlugin(cmd *cobra.Command, args []string) error {
 
 	switch pluginOptions.AgePlugin {
 	case "recipient-v1":
-		plugin.Log.Println("Got recipient-v1")
+		plugin.Log.Println("[DEBUG] Entering recipient-v1 handler")
 		p, err := page.New("tpm")
 		if err != nil {
+			plugin.Log.Printf("[ERROR] Failed to create plugin: %v", err)
 			return err
 		}
 		p.HandleRecipient(func(data []byte) (age.Recipient, error) {
+			plugin.Log.Println("[DEBUG] HandleRecipient callback invoked")
 			r, err := plugin.DecodeRecipient(page.EncodeRecipient("tpm", data))
 			if err != nil {
+				plugin.Log.Printf("[ERROR] Failed to decode recipient: %v", err)
 				return nil, err
 			}
+			plugin.Log.Println("[DEBUG] HandleRecipient callback completed successfully")
 			return &Recipient{r}, nil
 		})
+		plugin.Log.Println("[DEBUG] Calling p.RecipientV1()")
 		if exitCode := p.RecipientV1(); exitCode != 0 {
+			plugin.Log.Printf("[ERROR] age-plugin exited with code %d", exitCode)
 			return fmt.Errorf("age-plugin exited with code %d", exitCode)
 		}
+		plugin.Log.Println("[DEBUG] recipient-v1 handler completed")
 	case "identity-v1":
 		tpm, err := getTPM()
 		if err != nil {
+			plugin.Log.Printf("[ERROR] Failed to get TPM: %v", err)
 			return err
 		}
 		defer tpm.Close()
-		plugin.Log.Println("Got identity-v1")
+		plugin.Log.Println("[DEBUG] Entering identity-v1 handler")
 		p, err := page.New("tpm")
 		if err != nil {
+			plugin.Log.Printf("[ERROR] Failed to create plugin: %v", err)
 			return err
 		}
 		p.HandleIdentity(func(data []byte) (age.Identity, error) {
+			plugin.Log.Println("[DEBUG] HandleIdentity callback invoked")
 			i, err := plugin.DecodeIdentity(page.EncodeIdentity("tpm", data))
 			if err != nil {
+				plugin.Log.Printf("[ERROR] Failed to decode identity: %v", err)
 				return nil, err
 			}
+			plugin.Log.Println("[DEBUG] HandleIdentity callback completed successfully")
 			return &Identity{i, p, tpm.TPM()}, nil
 		})
+		plugin.Log.Println("[DEBUG] Calling p.IdentityV1()")
 		if exitCode := p.IdentityV1(); exitCode != 0 {
+			plugin.Log.Printf("[ERROR] age-plugin exited with code %d", exitCode)
 			return fmt.Errorf("age-plugin exited with code %d", exitCode)
 		}
+		plugin.Log.Println("[DEBUG] identity-v1 handler completed")
 	default:
 		tpm, err := getTPM()
 		if err != nil {
+			plugin.Log.Printf("[ERROR] Failed to get TPM: %v", err)
 			return err
 		}
 		defer tpm.Close()
@@ -289,11 +305,13 @@ func RunPlugin(cmd *cobra.Command, args []string) error {
 		if inFile := cmd.Flags().Arg(0); inFile != "" && inFile != "-" {
 			f, err := os.Open(inFile)
 			if err != nil {
+				plugin.Log.Printf("[ERROR] Failed to open input file %q: %v", inFile, err)
 				return fmt.Errorf("failed to open input file %q: %v", inFile, err)
 			}
 			defer f.Close()
 			in = f
 		}
+		plugin.Log.Println("[DEBUG] Calling RunCli")
 		return RunCli(cmd, tpm.TPM(), in, os.Stdout)
 	}
 	return nil
