@@ -4,12 +4,16 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"io"
 	"testing"
 
 	"github.com/google/go-tpm/tpm2/transport/simulator"
 )
 
 func TestEncryptionDecryption(t *testing.T) {
+	// Initialize logger for tests, discarding output
+	SetLogger(io.Discard)
+
 	tpm, err := simulator.OpenSimulator()
 	if err != nil {
 		t.Fatalf("failed opening tpm: %v", err)
